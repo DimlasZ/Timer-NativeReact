@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(npm uninstall expo-notifications)",
-      "Bash(npm install @notifee/react-native)"
+      "Bash(npm install @notifee/react-native)",
+      "Bash(npx expo install expo-audio)",
+      "Bash(xargs grep -l \"AudioAttributes\\\\|createChannel\\\\|NotificationChannel\")",
+      "Bash(xargs grep -l \"createChannel\")"
     ]
   }
 }

@@ -11,10 +11,10 @@ import notifee, {
 } from '@notifee/react-native';
 import * as Haptics from 'expo-haptics';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import { Audio } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 
 const DEFAULT_DURATION = 65 * 60; // 1:05:00
-const CHANNEL_ID = 'timer-alarm';
+const CHANNEL_ID = 'timer-alarm-v2';
 const NOTIF_ID_FINAL = 'timer-alarm';
 const NOTIF_ID_WARN_40 = 'timer-warn-40';
 const NOTIF_ID_WARN_20 = 'timer-warn-20';
@@ -214,20 +214,22 @@ export default function App() {
 
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
+    // Small delay to let the app fully foreground before acquiring audio focus
+    await new Promise(resolve => setTimeout(resolve, 300));
+
     // Loop alarm sound in-app
-    const { sound } = await Audio.Sound.createAsync(
-      require('./assets/sounds/alarm.wav'),
-      { isLooping: true }
-    );
-    soundRef.current = sound;
-    await sound.playAsync();
+    await setAudioModeAsync({ playsInSilentMode: true });
+    const player = createAudioPlayer(require('./assets/sounds/alarm.wav'));
+    player.loop = true;
+    player.play();
+    soundRef.current = player;
   };
 
   const stopAlarm = async () => {
     isFinishedRef.current = false; // reset guard for next alarm
     if (soundRef.current) {
-      await soundRef.current.stopAsync();
-      await soundRef.current.unloadAsync();
+      soundRef.current.pause();
+      soundRef.current.remove();
       soundRef.current = null;
     }
     await notifee.cancelNotification(NOTIF_ID_FINAL);
