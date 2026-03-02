@@ -12,14 +12,8 @@
       "backgroundColor": "#ffffff"
     },
     "plugins": [
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/icon.png",
-          "color": "#ffffff",
-          "sounds": []
-        }
-      ]
+      "@notifee/react-native",
+      "./plugins/withAlarmPermissions"
     ],
     "android": {
       "adaptiveIcon": {
@@ -28,7 +22,15 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "package": "com.dimlas.TimerNativeReact"
+      "package": "com.dimlas.TimerNativeReact",
+      "permissions": [
+        "android.permission.VIBRATE",
+        "android.permission.WAKE_LOCK",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.USE_EXACT_ALARM",
+        "android.permission.FOREGROUND_SERVICE"
+      ]
     },
     "extra": {
       "eas": {

@@ -1,26 +1,29 @@
 import 'expo-dev-client';
 import { useState, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  AppState,
-} from 'react-native';
-import * as Notifications from 'expo-notifications';
+import { View, Text, TouchableOpacity, StyleSheet, AppState, Modal } from 'react-native';
+import notifee, {
+  AndroidImportance,
+  AndroidCategory,
+  AndroidVisibility,
+  TriggerType,
+  AlarmType,
+  EventType,
+} from '@notifee/react-native';
 import * as Haptics from 'expo-haptics';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { Audio } from 'expo-av';
 
-// Show notifications even when app is in foreground
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
+const DEFAULT_DURATION = 3; // seconds for testing
+const CHANNEL_ID = 'timer-alarm';
+const NOTIF_ID = 'timer-alarm';
+
+// Runs when alarm fires and the app is killed/backgrounded.
+// Full-screen intent will reopen the app — audio starts there.
+notifee.onBackgroundEvent(async ({ type, detail }) => {
+  if (type === EventType.ACTION_PRESS && detail.pressAction?.id === 'dismiss') {
+    await notifee.cancelNotification(detail.notification?.id ?? NOTIF_ID);
+  }
 });
-
-const DEFAULT_DURATION = 5 * 60; // 5 minutes in seconds
 
 export default function App() {
   const [duration, setDuration] = useState(DEFAULT_DURATION);
@@ -28,19 +31,21 @@ export default function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [isFinished, setIsFinished] = useState(false);
 
-  const endTimeRef = useRef(null);    // absolute timestamp when timer ends
+  const endTimeRef = useRef(null);
   const intervalRef = useRef(null);
-  const notifIdRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
+  const soundRef = useRef(null);
 
-  // Request notification permissions on mount
   useEffect(() => {
-    (async () => {
-      const { status } = await Notifications.requestPermissionsAsync();
-      if (status !== 'granted') {
-        console.warn('Notification permission not granted');
+    setupChannel();
+    checkInitialNotification();
+
+    // Foreground event handler (dismiss button tapped while app is open)
+    const unsubFg = notifee.onForegroundEvent(({ type, detail }) => {
+      if (type === EventType.ACTION_PRESS && detail.pressAction?.id === 'dismiss') {
+        stopAlarm();
       }
-    })();
+    });
 
     // Reconcile timer when app returns to foreground
     const sub = AppState.addEventListener('change', (nextState) => {
@@ -60,8 +65,32 @@ export default function App() {
       appStateRef.current = nextState;
     });
 
-    return () => sub.remove();
+    return () => {
+      sub.remove();
+      unsubFg();
+    };
   }, []);
+
+  const setupChannel = async () => {
+    await notifee.requestPermission();
+    await notifee.createChannel({
+      id: CHANNEL_ID,
+      name: 'Timer Alarm',
+      importance: AndroidImportance.HIGH,
+      sound: 'alarm',
+      vibration: true,
+      vibrationPattern: [0, 250, 250, 250],
+      bypassDnd: true,
+    });
+  };
+
+  // If app was launched by tapping the alarm notification (from killed state)
+  const checkInitialNotification = async () => {
+    const initial = await notifee.getInitialNotification();
+    if (initial) {
+      finish();
+    }
+  };
 
   const start = async () => {
     const endTime = Date.now() + remaining * 1000;
@@ -71,18 +100,35 @@ export default function App() {
 
     await activateKeepAwakeAsync();
 
-    // Schedule a local notification for when the timer ends
-    const id = await Notifications.scheduleNotificationAsync({
-      content: {
-        title: 'Timer finished!',
-        body: 'Your countdown is done.',
-        sound: true,
+    // Schedule alarm using Android AlarmManager (fires even in Doze mode)
+    await notifee.createTriggerNotification(
+      {
+        id: NOTIF_ID,
+        title: 'Timer Finished!',
+        body: 'Tap Dismiss to stop the alarm.',
+        android: {
+          channelId: CHANNEL_ID,
+          category: AndroidCategory.ALARM,
+          visibility: AndroidVisibility.PUBLIC,
+          sound: 'alarm',
+          // Wakes screen and shows alarm UI on lock screen
+          fullScreenAction: { id: 'default' },
+          actions: [{ title: 'Dismiss', pressAction: { id: 'dismiss' } }],
+          ongoing: true,
+          autoCancel: false,
+          asForegroundService: false,
+        },
       },
-      trigger: { type: 'timeInterval', seconds: remaining, repeats: false },
-    });
-    notifIdRef.current = id;
+      {
+        type: TriggerType.TIMESTAMP,
+        timestamp: endTime,
+        alarmManager: {
+          allowWhileIdle: true,
+          type: AlarmType.SET_EXACT_AND_ALLOW_WHILE_IDLE,
+        },
+      }
+    );
 
-    // Tick every 500ms to keep display smooth
     intervalRef.current = setInterval(() => {
       const left = Math.round((endTimeRef.current - Date.now()) / 1000);
       if (left <= 0) {
@@ -98,17 +144,13 @@ export default function App() {
     clearInterval(intervalRef.current);
     endTimeRef.current = null;
     deactivateKeepAwake();
-
-    if (notifIdRef.current) {
-      await Notifications.cancelScheduledNotificationAsync(notifIdRef.current);
-      notifIdRef.current = null;
-    }
+    await notifee.cancelTriggerNotification(NOTIF_ID);
   };
 
   const reset = async () => {
     await pause();
+    await stopAlarm();
     setRemaining(duration);
-    setIsFinished(false);
   };
 
   const finish = async () => {
@@ -119,7 +161,29 @@ export default function App() {
     setIsFinished(true);
     deactivateKeepAwake();
 
+    // Cancel the scheduled trigger — alarm already fired
+    await notifee.cancelTriggerNotification(NOTIF_ID);
+
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    // Loop alarm sound in-app
+    const { sound } = await Audio.Sound.createAsync(
+      require('./assets/sounds/alarm.wav'),
+      { isLooping: true }
+    );
+    soundRef.current = sound;
+    await sound.playAsync();
+  };
+
+  const stopAlarm = async () => {
+    if (soundRef.current) {
+      await soundRef.current.stopAsync();
+      await soundRef.current.unloadAsync();
+      soundRef.current = null;
+    }
+    await notifee.cancelNotification(NOTIF_ID);
+    setIsFinished(false);
+    setRemaining(duration);
   };
 
   const adjustDuration = (deltaSeconds) => {
@@ -138,15 +202,21 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      {/* Timer display */}
-      <Text style={[styles.timer, isFinished && styles.timerFinished]}>
-        {formatTime(remaining)}
-      </Text>
+      {/* Alarm popup */}
+      <Modal visible={isFinished} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Time's up!</Text>
+            <TouchableOpacity style={styles.stopBtn} onPress={stopAlarm}>
+              <Text style={styles.stopBtnText}>Stop Alarm</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
-      {isFinished && <Text style={styles.doneText}>Time's up!</Text>}
+      <Text style={styles.timer}>{formatTime(remaining)}</Text>
 
-      {/* Time adjustment buttons (only when not running) */}
-      {!isRunning && !isFinished && (
+      {!isRunning && (
         <View style={styles.adjustRow}>
           <TouchableOpacity style={styles.adjustBtn} onPress={() => adjustDuration(-60)}>
             <Text style={styles.adjustText}>-1m</Text>
@@ -163,7 +233,6 @@ export default function App() {
         </View>
       )}
 
-      {/* Controls */}
       <View style={styles.controlRow}>
         {isRunning ? (
           <TouchableOpacity style={[styles.btn, styles.btnPause]} onPress={pause}>
@@ -175,10 +244,9 @@ export default function App() {
             onPress={start}
             disabled={remaining === 0}
           >
-            <Text style={styles.btnText}>{isFinished ? 'Restart' : 'Start'}</Text>
+            <Text style={styles.btnText}>Start</Text>
           </TouchableOpacity>
         )}
-
         <TouchableOpacity style={[styles.btn, styles.btnReset]} onPress={reset}>
           <Text style={styles.btnText}>Reset</Text>
         </TouchableOpacity>
@@ -201,15 +269,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     letterSpacing: 4,
     fontVariant: ['tabular-nums'],
-  },
-  timerFinished: {
-    color: '#ff6b6b',
-  },
-  doneText: {
-    color: '#ff6b6b',
-    fontSize: 18,
-    fontWeight: '500',
-    marginTop: -16,
   },
   adjustRow: {
     flexDirection: 'row',
@@ -255,5 +314,35 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 17,
     fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalBox: {
+    backgroundColor: '#1e1e1e',
+    borderRadius: 20,
+    padding: 40,
+    alignItems: 'center',
+    gap: 24,
+    width: '75%',
+  },
+  modalTitle: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: '600',
+  },
+  stopBtn: {
+    backgroundColor: '#ff6b6b',
+    paddingHorizontal: 40,
+    paddingVertical: 14,
+    borderRadius: 40,
+  },
+  stopBtnText: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '700',
   },
 });

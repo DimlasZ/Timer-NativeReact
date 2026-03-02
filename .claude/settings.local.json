@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm uninstall expo-notifications)",
+      "Bash(npm install @notifee/react-native)"
+    ]
+  }
+}
